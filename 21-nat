@@ -1,0 +1,244 @@
+#!/bin/sh
+#
+# Script to implement a IPv6 full cone NAT on OpenWrt, w/ the aid of
+# the netfilter NETMAP target.
+#
+# This script is meant to be used in /etc/hotplug.d, for users who
+# suffer from changing IPv6 prefixes their ISP provides them with. It
+# assumes that the LAN side is a pure ULA network
+# (network.lan.ip6class`" = "local").
+#
+# What it does is implement a 1:1 mapping from ULA to GUA addresses in
+# the ip6tables PRE/POSTROUTING chains, and install a default route
+# for ULA addresses, so that those can connect to the Internet with
+# the source addresses of their packets accordingly modified.
+#
+# Note that the ip6tables nat chains are flushed before installment of
+# our rules, so any other rules will be deleted.
+#
+# For the ip6tables NETMAP target the package iptables-mod-nat-extra
+# needs to be installed.
+#
+
+#set -x
+
+ENABLED=0
+# map LAN ULA addresses to global addresses on WAN by default;
+# for a 2nd tier, cascaded router w/ different ULA prefixes on both
+# sides, LAN and WAN, use 'ULA' here
+MAPTO=GUA
+
+# users may set ENABLED and MAPTO in this file
+. /etc/default/nat
+
+[ "$ENABLED" = "1" ] || [ "$ENABLED" = "y" ] || exit 0
+
+# this script gets triggered when the wan6 iface comes up
+#[ "$ACTION" = ifup ] && [ "$INTERFACE" = wan6 ] || exit 0
+# make sure the LAN side is configured as pure ULA network
+[ "`uci get network.lan.ip6class`" = "local" ]  || exit 0
+
+debug () {
+    [ -t ] && echo "$@"
+    :
+}
+log() {
+    [ -t ] && echo "$@"
+    logger -t nat "$@"
+}
+
+# helper function, prints addresses that match a given bitmask; like:
+# cat addresses | get_addresses_for_bitmask <mask>
+get_addresses_for_bitmask() {
+
+    awk -v mask=$1 -e '
+
+    function debug(msg) {
+        print msg
+        ;
+    }
+
+    # convert a string of hex numbers to string of bits;
+    # inspired by bits2str function from gawk manual
+    function hexstr2bitstr(hexstring)
+    {
+        split(hexstring, chars, "")
+        ret = ""
+
+        # each individual hex char converts to 4 bits
+        for (i=1; i <= length(hexstring); i++) {
+
+            # convert character to decimal number
+            num = sprintf("%d", "0x" chars[i])
+
+            if( num == 0 )
+                bits = "0000"
+
+            else {
+                bits = ""
+
+                # bitshift through the number and add 1/0s accordingly
+                for (; num != 0; num = rshift(num, 1))
+                    bits = (and(num, 1) ? "1" : "0") bits
+
+                # fill up to 4 bits if need be
+                while (length(bits) < 4)
+                    bits = "0" bits
+            }
+
+            ret = ret bits
+        }
+        return ret
+    }
+
+    # expand potentially compressed ipv6 address; idea from here:
+    # https://github.com/chmduquesne/wg-ip/blob/master/wg-ip
+    function expand_ipv6_addr(addr)
+    {
+        # prepend 0 if leading char is :
+        if(addr ~ /^:/)
+            addr = "0" addr
+
+        # replace double colon with :0 for each colon that is missing;
+        # a potential extra leading 0 will be eliminated by sprintf later
+        if(addr ~ /::/) {
+            tmp = addr
+            count = gsub(/:/, ":", tmp)
+            for (i = 1; i <= 9 - count; i++)
+                colons = ":0" colons
+            sub(/::/, colons, addr)
+        }
+
+        # now format each field as 4 digit hex number
+        len = split(addr, a , ":")
+        for (i=1; i <= len; i++)
+            a[i] = sprintf("%04x", "0x" a[i])
+
+        # join the array of formatted numbers back together
+        rval = a[1]
+        for (i=2; i <= len; i++)
+            rval = rval ":" a[i]
+
+        return rval
+    }
+
+    {
+        addr = $0
+        if (addr == "") exit
+
+        mlength=length(mask)
+        l = 26
+
+        addr = expand_ipv6_addr(addr)
+        debug(sprintf(" %-" l "s %s %s",  "expanded address", ":", addr))
+
+        # get a pure hex string from expanded address
+        gsub(":","",addr)
+        debug(sprintf(" %-" l "s %s %s", "colons stripped", ":", addr))
+
+        # shorten hex string to the max length we need for mask comparison
+        strlen = int(mlength/4) + 1
+        hexstr = substr(addr, 1, strlen)
+        debug(sprintf(" %-" l "s %s %s",  "hexstr for mask comparison", ":",  hexstr))
+
+        # the bit string
+        bitstr = hexstr2bitstr(hexstr)
+        debug(sprintf(" %-" l "s %s %s",  "hexstr2bitstr result", ":", bitstr))
+
+        # now a precise shortening to the given mask length
+        bitstr = substr(bitstr, 1, mlength)
+        debug(sprintf(" %-" l "s %s %s",  "bits to be compared", ":", bitstr))
+        debug(sprintf(" %-" l "s %s %s",  "mask", ":",  mask))
+
+        if(bitstr == mask) {
+            # address is a match;
+            # reduce line num by one, for use in jsonfilter indexing
+            printf("%d:%s\n", NR-1, $0)
+        }
+    }
+    '
+}
+
+# bitmasks we use to recognize IPv6 address classes
+guabits=001 # GUA
+ulabits=11111101 # ULA
+
+# the classes we want to use for nat mapping
+lanbits=$ulabits # map ula addresses on lan ...
+if   [ "$MAPTO" = "GUA" ]; then
+    wanbits=$guabits # ... to gua addresses on wan
+elif [ "$MAPTO" = "ULA" ]; then
+    wanbits=$ulabits # ... to ula addresses on wan
+else
+    log "No suitable WAN mapping - MAPTO: $MAPTO"
+    exit 0
+fi
+
+# get lists of prefix addresses that match our bitmasks
+waddr_candidates=`ifstatus wan6 | jsonfilter -e '@["ipv6-prefix"][*].address' | get_addresses_for_bitmask $wanbits`
+laddr_candidates=`ifstatus lan  | jsonfilter -e '@["ipv6-prefix-assignment"][*].address' | get_addresses_for_bitmask $lanbits`
+debug "wan prefix candidates":
+debug "$waddr_candidates"
+debug "lan prefix candidates":
+debug "$laddr_candidates"
+exit
+# take the first matching prefix on each side, WAN and LAN
+windex=`echo $waddr_candidates | head -1 | cut -d: -f1`
+lindex=`echo $laddr_candidates | head -1 | cut -d: -f1`
+debug "json indices - windex: $windex lindex: $lindex"
+
+[ -n "$windex" ] && [ -n "$lindex" ] || {
+    log "No suitable prefixes - windex: $windex lindex: $lindex"
+    exit 1
+}
+
+# prefix addresses
+waddr=`ifstatus wan6 | jsonfilter -e "@['ipv6-prefix'][$windex].address"`
+laddr=`ifstatus lan  | jsonfilter -e "@['ipv6-prefix-assignment'][$lindex].address"`
+debug "prefixes - waddr: $waddr laddr: $laddr"
+[ -n "$waddr" ] && [ -n "laddr" ] && ! [ "$waddr" = "$laddr" ] || {
+    log "No suitable prefixes - waddr: $waddr laddr: $laddr"
+    exit 1
+}
+
+# prefix masks
+wmask=`ifstatus wan6 | jsonfilter -e "@['ipv6-prefix'][$windex].mask"`
+lmask=`ifstatus lan  | jsonfilter -e "@['ipv6-prefix-assignment'][$lindex].mask"`
+debug "prefix masks - wmask: $wmask lmask: $lmask"
+
+[ -n "$wmask" ] && [ -n "$lmask" ] && [ $wmask -le $lmask ] || {
+    log "No suitable prefix masks - wmask: $wmask lmask: $lmask"
+    exit 1
+}
+
+# ok, we found a valid pair of prefixes, now determine the default
+# route for the prefix we've chosen on the WAN side; this will then
+# also serve as default route for the ULA network on the LAN side
+nexthop=`ifstatus wan6 | jsonfilter -e "$.route[@.target='::' && @.source='$waddr/$wmask'].nexthop"`
+debug "nexthop - $nexthop for $waddr/$wmask"
+[ -n "$nexthop" ] || {
+    log "No suitable route - nexthop: $nexthop"
+    exit 1
+}
+
+# wan interface device
+wan_iface=`ifstatus wan6 | jsonfilter -e '$.l3_device'`
+debug "wan device - $wan_iface"
+
+# let's get to work - this implements the full cone NAT
+log "Mapping $laddr/$lmask -> $waddr/$lmask on device $wan_iface"
+# ip6tables-restore -n <<-EOF;
+# *nat
+# -F PREROUTING
+# -F POSTROUTING
+# -A PREROUTING  -i $wan_iface -d $waddr/$lmask -j NETMAP --to $laddr/$lmask
+# -A POSTROUTING -o $wan_iface -s $laddr/$lmask -j NETMAP --to $waddr/$lmask
+# COMMIT
+# EOF
+
+# now the route, so that packets with ULA source address can actually leave
+# the network
+route="default from $laddr/$lmask via $nexthop dev $wan_iface"
+log "Installing route - $route"
+# ip -6 route del default from $laddr/$lmask
+# ip -6 route add $route
