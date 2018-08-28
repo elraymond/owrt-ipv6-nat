@@ -1,0 +1,12 @@
+# set to '0' to disable the script
+ENABLED=1
+
+# set to 'ULA' for a cascaded router that has ULA networks on
+# both the WAN and LAN side, and which you have configured
+# to isolate the ULA network on the LAN side
+MAPTO=GUA
+
+# set to 1 for debugging output on the console; the script
+# does a dry run in this case, so no ip6tables rules and no
+# routes will be changed
+DEBUG=0
