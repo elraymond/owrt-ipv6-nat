@@ -22,24 +22,29 @@
 
 #set -x
 
+# set to 1 to actually enable this script; preferably done in
+# /etc/default/nat
 ENABLED=0
+# set DEBUG to 1 for a dry run w/ verbose output; in this case the
+# router configuration is not changed
+DEBUG=0
 # map LAN ULA addresses to global addresses on WAN by default;
 # for a 2nd tier, cascaded router w/ different ULA prefixes on both
 # sides, LAN and WAN, use 'ULA' here
 MAPTO=GUA
 
-# users may set ENABLED and MAPTO in this file
+# users may set ENABLED/MAPTO/DEBUG in this file
 . /etc/default/nat
 
 [ "$ENABLED" = "1" ] || [ "$ENABLED" = "y" ] || exit 0
 
 # this script gets triggered when the wan6 iface comes up
-#[ "$ACTION" = ifup ] && [ "$INTERFACE" = wan6 ] || exit 0
+[ "$DEBUG" = 1 ] || ( [ "$ACTION" = ifup ] && [ "$INTERFACE" = wan6 ] ) || exit 0
 # make sure the LAN side is configured as pure ULA network
 [ "`uci get network.lan.ip6class`" = "local" ]  || exit 0
 
 debug () {
-    [ -t ] && echo "$@"
+    [ "$DEBUG" = 1 ] && echo "$@" >&2
     :
 }
 log() {
@@ -51,14 +56,14 @@ log() {
 # cat addresses | get_addresses_for_bitmask <mask>
 get_addresses_for_bitmask() {
 
-    awk -v mask=$1 -e '
+    awk -v mask=$1 -v debug=$DEBUG -e '
 
     function debug(msg) {
-        print msg
-        ;
+        if ( debug == 1 )
+            print msg | "cat >&2"
     }
 
-    # convert a string of hex numbers to string of bits;
+    # convert a string of hex numbers to a string of bits;
     # inspired by bits2str function from gawk manual
     function hexstr2bitstr(hexstring)
     {
@@ -181,7 +186,7 @@ debug "wan prefix candidates":
 debug "$waddr_candidates"
 debug "lan prefix candidates":
 debug "$laddr_candidates"
-exit
+
 # take the first matching prefix on each side, WAN and LAN
 windex=`echo $waddr_candidates | head -1 | cut -d: -f1`
 lindex=`echo $laddr_candidates | head -1 | cut -d: -f1`
@@ -227,18 +232,19 @@ debug "wan device - $wan_iface"
 
 # let's get to work - this implements the full cone NAT
 log "Mapping $laddr/$lmask -> $waddr/$lmask on device $wan_iface"
-# ip6tables-restore -n <<-EOF;
-# *nat
-# -F PREROUTING
-# -F POSTROUTING
-# -A PREROUTING  -i $wan_iface -d $waddr/$lmask -j NETMAP --to $laddr/$lmask
-# -A POSTROUTING -o $wan_iface -s $laddr/$lmask -j NETMAP --to $waddr/$lmask
-# COMMIT
-# EOF
+[ "$DEBUG" = 1 ] || ip6tables-restore -n <<-EOF;
+*nat
+-F PREROUTING
+-F POSTROUTING
+-A PREROUTING  -i $wan_iface -d $waddr/$lmask -j NETMAP --to $laddr/$lmask
+-A POSTROUTING -o $wan_iface -s $laddr/$lmask -j NETMAP --to $waddr/$lmask
+COMMIT
+EOF
 
 # now the route, so that packets with ULA source address can actually leave
 # the network
 route="default from $laddr/$lmask via $nexthop dev $wan_iface"
 log "Installing route - $route"
-# ip -6 route del default from $laddr/$lmask
-# ip -6 route add $route
+[ "$DEBUG" = 1 ] && exit 0
+ip -6 route del default from $laddr/$lmask
+ip -6 route add $route
