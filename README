@@ -1,0 +1,121 @@
+owrt-ipv6-nat
+=============
+
+What?
+-----
+
+A hotplug script that implements an IPv6 full cone NAT on OpenWrt.
+
+Why?
+----
+
+If your ISP provides you with changing IPv6 prefixes, like in my case, that
+might potentially cause you some trouble. Examples.
+
+You aren't able to configure global static addresses. Because those change when
+the prefix changes.
+
+If you run a stateful DHCPv6 network w/o SLAAC, as soon as the prefix changes
+your clients will have invalid IPv6 addresses and keep them until their lease
+time expires.
+
+If you want to allow incoming connections on your firewall the corresponding
+rules have to take the currently active prefix into account, and reconfigure
+themselves upon prefix change.
+
+Etcetera etcetera.
+
+So if you don't like that, and don't mind IPv6 purists chastising you for
+violating dogmas, NAT might actually provide some relief.
+
+How?
+----
+
+This script implements a full cone NAT by means of the netfilter/ip6tables
+NETMAP target. It does this as a hotplug script that gets triggered whenever the
+wan6 interface comes up.
+
+When this happens it looks up the currently active prefixes on the WAN and LAN
+side, installs two simple rules in the ip6tables nat table which map interface
+identifiers 1-1 between those prefixes, and installs a corresponding route. And
+that's it.
+
+More details, please.
+---------------------
+
+Ok. What I've done, and you should do when going down this road, is to configure
+your LAN as pure ULA network. That means that
+option ula_prefix
+is set and you've configured your router like this
+list ip6class 'local'
+option ra_default '1'
+
+That means that your router will advertise only the ULA prefix on your LAN and
+announce itself as default gateway in any case. So no global addresses on LAN at
+all, and you're free to do what you want, like in a private IPv4 network.
+Configure static and DHCPv6 addresses. Whatever SLAAC identerface identifier
+generation approach you want (I'm using the net.ipv6.conf.default.stable_secret
+approach, to prevent MAC address leakage to the Internet). Whatever.
+
+Now, to reach the Internet you need a route and a global return address for
+each connection. And this is what this script provides you with.
+
+The ip6tables rules just rewrite the addresses on outgoing/incoming packets by
+changing the prefix, while leaving the host identifier part intact. Resulting in
+a 1-1 mapping between ULA and global addresses. And a route gets installed that
+tells your router to forward those packets to the next hop configured for your
+global prefix.
+
+For the mapping to work it needs a key prerequisite though: the prefix length on
+your WAN side needs to be less or equal than the one on your LAN side. Because
+if for example your ISP provides you with a /64 prefix but your ULA is
+configured as /60 prefix there's obviously a 4 byte long network part that can't
+be mapped. In such a case you may want to adjust
+option ip6assign
+accordingly.
+
+Pitfalls
+--------
+
+The usual ones with NAT, which can break end-to-end connectivity. Which is
+particularly true for application protocols that encode IP addresses themselves,
+like SIP. Which is why there's been lots of jumping through hoops to make those
+work w/ IPv4 NAT. And since IPv6 NAT isn't even supposed to exist the situation
+here might actually be worse.
+
+Application developers seem to catch up though, and acceptance of a desire for
+IPv6 NAT solutions has become more widespread. That's why we have according
+netfilter code on Linux at all, anyway.
+
+Technical overview
+------------------
+
+The script uses 'ifstatus' to retrieve interface configuration data for the
+wan6 and lan interfaces. It then checks if there's a GUA prefix on the wan6 and
+and an ULA prefix on the LAN side, and compares the prefix lengths. If the
+lengths match up, i.e. if the GUA prefix length is less or equal than the ULA
+one, the mapping is established.
+
+For this, the ip6tables nat table PRE/POSTROUTING chains are flushed. So any
+rules you might have had there will be gone. And then two new rules are
+installed, one on each chain. Which implement the NETMAP DNAT/SNAT.
+
+Finally, the next hop for the given GUA prefix gets looked up in the routing
+table. And a route is installed that designs this hop as default route for
+packets directed at global addresses and coming from the ULA network.
+
+Understood. What now?
+---------------------
+
+Put the 'nat' file in /etc/default/. That's where you comfortably en/disable the
+script. And put the 21-nat script itself in /etc/hoplug.d/iface/. Finally make
+sure you have the iptables-mod-nat-extra package installed, for NETMAP.
+
+Next time wan6 comes up the script will run. And logread should show you entries
+like this
+# logread | grep nat
+user.notice nat: Mapping fdee:dead:beef::/60 -> 2003:60:daed:beef::/60 on device pppoe-wan
+user.notice nat: Installing route - default from fdee:dead:beef::/60 via fe80::xxxx:xxxx:xxxx:xxxx dev pppoe-wan
+
+If it doesn't something went wrong. And you'll have to figure out the reason(s)
+yourself, I'm afraid.
