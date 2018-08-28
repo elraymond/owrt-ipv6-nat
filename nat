@@ -1,3 +1,6 @@
+# put this file into /etc/default/ - it will be sourced by
+# the script
+
 # set to '0' to disable the script
 ENABLED=1
 

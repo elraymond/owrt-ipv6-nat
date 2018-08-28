@@ -1,23 +1,23 @@
 #!/bin/sh
 #
-# Script to implement a IPv6 full cone NAT on OpenWrt, w/ the aid of
-# the netfilter NETMAP target.
+# Script to implement a IPv6 full cone NAT on OpenWrt, w/ the aid of the
+# netfilter NETMAP target.
 #
-# This script is meant to be used in /etc/hotplug.d, for users who
-# suffer from changing IPv6 prefixes their ISP provides them with. It
-# assumes that the LAN side is a pure ULA network
+# This script is meant to be used in /etc/hotplug.d/iface, for users who suffer
+# from changing IPv6 prefixes their ISP provides them with. It assumes that the
+# LAN side is a pure ULA network
 # (network.lan.ip6class`" = "local").
 #
-# What it does is implement a 1:1 mapping from ULA to GUA addresses in
-# the ip6tables PRE/POSTROUTING chains, and install a default route
-# for ULA addresses, so that those can connect to the Internet with
-# the source addresses of their packets accordingly modified.
+# What it does is implement a 1:1 mapping from ULA to GUA addresses in the
+# ip6tables PRE/POSTROUTING chains, and install a default route for ULA
+# addresses, so that those can connect to the Internet with the source addresses
+# of their packets accordingly modified.
 #
-# Note that the ip6tables nat chains are flushed before installment of
-# our rules, so any other rules will be deleted.
+# Note that the ip6tables nat chains are flushed before installment of our
+# rules, so any other rules will be deleted.
 #
-# For the ip6tables NETMAP target the package iptables-mod-nat-extra
-# needs to be installed.
+# For the ip6tables NETMAP target the package iptables-mod-nat-extra needs to be
+# installed.
 #
 
 #set -x
