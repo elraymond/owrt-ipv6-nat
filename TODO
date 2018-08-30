@@ -1,13 +1,17 @@
-- all variables used in awk functions are *global* unless declared
+- DONE
+  all variables used in awk functions are *global* unless declared
   as function parameters; check/modify code accordingly
 
-- seen packets w/ destination address "fd00::1" going out my WAN
+  "localized" all function variables now, by declaring them in
+  function parameter list
+
+- DONE
+  seen packets w/ destination address "fd00::1" going out my WAN
   interface; that doesn't really make sense inside my network but
   should be prohibited anyway, possibly by firewall or routing
   rules; application/system misconfiguration?
 
   ok, those are LAN applications using bogus addresses to open
   connections, has nothing to do with our setup; route
-  ip -6 route add unreachable fc00::/7 dev pppoe-wan
+  ip -6 route add unreachable fc00::/7 metric 2147483647
   prevents those packets from leaving our network
-  DONE

@@ -65,7 +65,7 @@ get_addresses_for_bitmask() {
 
     # convert a string of hex numbers to a string of bits;
     # inspired by bits2str function from gawk manual
-    function hexstr2bitstr(hexstring)
+    function hexstr2bitstr(hexstring, chars, ret, num, bits)
     {
         split(hexstring, chars, "")
         ret = ""
@@ -75,21 +75,15 @@ get_addresses_for_bitmask() {
 
             # convert character to decimal number
             num = sprintf("%d", "0x" chars[i])
+            bits = ""
 
-            if( num == 0 )
-                bits = "0000"
+            # bitshift through the number and add 1/0s accordingly
+            for (; num != 0; num = rshift(num, 1))
+                bits = (and(num, 1) ? "1" : "0") bits
 
-            else {
-                bits = ""
-
-                # bitshift through the number and add 1/0s accordingly
-                for (; num != 0; num = rshift(num, 1))
-                    bits = (and(num, 1) ? "1" : "0") bits
-
-                # fill up to 4 bits if need be
-                while (length(bits) < 4)
-                    bits = "0" bits
-            }
+            # fill up to 4 bits if need be
+            while (length(bits) < 4)
+                bits = "0" bits
 
             ret = ret bits
         }
@@ -98,7 +92,7 @@ get_addresses_for_bitmask() {
 
     # expand potentially compressed ipv6 address; idea from here:
     # https://github.com/chmduquesne/wg-ip/blob/master/wg-ip
-    function expand_ipv6_addr(addr)
+    function expand_ipv6_addr(addr, tmp, count, colons, len, a, ret)
     {
         # prepend 0 if leading char is :
         if(addr ~ /^:/)
@@ -120,11 +114,11 @@ get_addresses_for_bitmask() {
             a[i] = sprintf("%04x", "0x" a[i])
 
         # join the array of formatted numbers back together
-        rval = a[1]
+        ret = a[1]
         for (i=2; i <= len; i++)
-            rval = rval ":" a[i]
+            ret = ret ":" a[i]
 
-        return rval
+        return ret
     }
 
     {
@@ -158,7 +152,7 @@ get_addresses_for_bitmask() {
         if(bitstr == mask) {
             # address is a match;
             # reduce line num by one, for use in jsonfilter indexing
-            printf("%d:%s\n", NR-1, $0)
+            printf("%d| %s\n", NR-1, $0)
         }
     }
     '
@@ -188,8 +182,8 @@ debug "lan prefix candidates":
 debug "$laddr_candidates"
 
 # take the first matching prefix on each side, WAN and LAN
-windex=`echo $waddr_candidates | head -1 | cut -d: -f1`
-lindex=`echo $laddr_candidates | head -1 | cut -d: -f1`
+windex=`echo $waddr_candidates | head -1 | cut -d'|' -f1`
+lindex=`echo $laddr_candidates | head -1 | cut -d'|' -f1`
 debug "json indices - windex: $windex lindex: $lindex"
 
 [ -n "$windex" ] && [ -n "$lindex" ] || {
@@ -243,7 +237,7 @@ EOF
 
 # now the route, so that packets with ULA source address can actually leave
 # the network
-route="default from $laddr/$lmask via $nexthop dev $wan_iface"
+route="default from $laddr/$lmask via $nexthop dev $wan_iface metric 512"
 log "Installing route - $route"
 [ "$DEBUG" = 1 ] && exit 0
 ip -6 route del default from $laddr/$lmask
